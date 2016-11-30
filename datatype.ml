@@ -5,6 +5,6 @@ type terminal =
 
 type item =
   | Terminal of terminal
-  | Nonterminal of string
+  | Nonterminal of int
 
 type nonterminal = item list list
