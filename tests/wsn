@@ -1,0 +1,4 @@
+syntax = { production } .
+production = Ident '=' expr '.' .
+expr = term { '|' term } .
+factor = Ident | '(' expr ')' | '[' expr ']' | '{' expr '}' .
