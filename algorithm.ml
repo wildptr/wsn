@@ -34,23 +34,25 @@ let rec nonterminals_used_by = function
       es |> List.fold_left f StringSet.empty
   | Ast.Repeated e -> nonterminals_used_by e
 
+exception Break
+
 let rec depend = function
   | False | True -> IntSet.empty
   | Var i -> IntSet.add i IntSet.empty
   | And es ->
       let f acc e =
         match e with
-        | False -> IntSet.empty
+        | False -> raise Break
         | _ -> IntSet.union acc (depend e)
       in
-      es |> List.fold_left f IntSet.empty
+      (try es |> List.fold_left f IntSet.empty with Break -> IntSet.empty)
   | Or es ->
       let f acc e =
         match e with
-        | True -> IntSet.empty
+        | True -> raise Break
         | _ -> IntSet.union acc (depend e)
       in
-      es |> List.fold_left f IntSet.empty
+      (try es |> List.fold_left f IntSet.empty with Break -> IntSet.empty)
 
 let rec eval value_of = function
   | False -> false
