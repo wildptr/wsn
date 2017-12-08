@@ -1,25 +1,19 @@
 open Format
 
-type symbol =
+type expr =
   | Terminal of string
   | Nonterminal of string
-
-type expr =
-  | Symbol of symbol
   | Concat of expr list
   | Choice of expr list
   | Repeated of expr
 
-type definition = symbol * expr
+type definition = string * expr
 
 type grammar = definition list
 
-let string_of_symbol = function
-  | Terminal s -> s
-  | Nonterminal s -> s
-
 let rec pp_expr f = function
-  | Symbol s -> fprintf f "%s" (string_of_symbol s)
+  | Terminal s -> fprintf f "%s" s
+  | Nonterminal s -> fprintf f "%s" s
   | Concat [] -> fprintf f "()"
   | Concat (e::es) ->
       fprintf f "@[%a" pp_expr e;
@@ -34,7 +28,7 @@ let rec pp_expr f = function
       fprintf f "@[{%a}@]" pp_expr e
 
 let pp_definition f (s, e) =
-  fprintf f "@[%s =@ %a@] ." (string_of_symbol s) pp_expr e
+  fprintf f "@[%s =@ %a@] ." s pp_expr e
 
 let pp_grammar f = function
   | [] -> ()

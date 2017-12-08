@@ -1,4 +1,5 @@
 syntax = { production } .
 production = Ident '=' expr '.' .
 expr = term { '|' term } .
+term = factor { factor } .
 factor = Ident | '(' expr ')' | '[' expr ']' | '{' expr '}' .

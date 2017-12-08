@@ -52,13 +52,13 @@ and parse_factor lexer =
   match token with
   | IDENT s ->
       Lexer.getsym lexer;
-      Ast.Symbol (symbol_of_string s)
+      symbol_of_string s
   | CHAR c ->
       Lexer.getsym lexer;
-      Ast.Symbol (Ast.Terminal (Printf.sprintf "'%c'" c))
+      Ast.Terminal (Printf.sprintf "'%c'" c)
   | STRING s ->
       Lexer.getsym lexer;
-      Ast.Symbol (Ast.Terminal (Printf.sprintf "\"%s\"" s))
+      Ast.Terminal (Printf.sprintf "\"%s\"" s)
   | LPAREN ->
       Lexer.getsym lexer;
       let e = parse_expr lexer in
@@ -76,16 +76,8 @@ and parse_factor lexer =
       Ast.Repeated e
   | _ -> raise (Syntax_error (pos, "factor expected"))
 
-let parse_nonterminal lexer =
-  let pos = snd (Lexer.peek lexer) in
-  let name = expect_ident lexer in
-  let sym = symbol_of_string name in
-  match sym with
-  | Nonterminal _ -> sym
-  | _ -> raise (Syntax_error (pos, "nonterminal expected"))
-
 let parse_definition lexer =
-  let head = parse_nonterminal lexer in
+  let head = expect_ident lexer in
   expect_punct lexer '=';
   let body = parse_expr lexer in
   expect_punct lexer '.';
