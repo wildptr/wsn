@@ -1,140 +1,199 @@
-type bexp =
-  | False
-  | True
-  | Var of int
-  | And of bexp list
-  | Or of bexp list
+type expr =
+  | Terminal of int
+  | Nonterminal of int
+  | Concat of expr list
+  | Choice of expr list
+  | Repeated of expr
 
-let rec to_bexp index_of = function
-  | Ast.Terminal _ -> False
-  | Ast.Nonterminal s -> Var (index_of s)
-  | Ast.Concat es -> And (List.map (to_bexp index_of) es)
-  | Ast.Choice es -> Or (List.map (to_bexp index_of) es)
-  | Ast.Repeated _ -> True
+let rec convert_expr lookup_terminal lookup_nonterminal =
+  let rec f = function
+    | Ast.Terminal s -> Terminal (lookup_terminal s)
+    | Ast.Nonterminal s -> Nonterminal (lookup_nonterminal s)
+    | Ast.Concat es -> Concat (List.map f es)
+    | Ast.Choice es -> Choice (List.map f es)
+    | Ast.Repeated e -> Repeated (f e)
+  in
+  f
 
-module Int = struct
-  type t = int
-  let compare (a:int) (b:int) = compare a b
-end
-module IntSet = Set.Make(Int)
-module StringSet = Set.Make(String)
-
-let rec nonterminals_used_by = function
-  | Ast.Terminal _ -> StringSet.empty
-  | Ast.Nonterminal s -> StringSet.add s StringSet.empty
-  | Ast.Concat es ->
-      let f acc e =
-        StringSet.union acc (nonterminals_used_by e)
+let rec union l1 l2 =
+  match l1, l2 with
+  | [], _ -> l2
+  | _, [] -> l1
+  | hd1::tl1, hd2::tl2 ->
+      let hd, tl =
+        if hd1 < hd2 then hd1, union tl1 l2 else hd2, union l1 tl2
       in
-      es |> List.fold_left f StringSet.empty
-  | Ast.Choice es ->
-      let f acc e =
-        StringSet.union acc (nonterminals_used_by e)
-      in
-      es |> List.fold_left f StringSet.empty
-  | Ast.Repeated e -> nonterminals_used_by e
+      match tl with
+      | [] -> [hd]
+      | hd'::tl' -> if hd = hd' then tl else hd::tl
 
-exception Break
+let union_set = List.fold_left union []
 
-let rec depend = function
-  | False | True -> IntSet.empty
-  | Var i -> IntSet.add i IntSet.empty
-  | And es ->
-      let f acc e =
-        match e with
-        | False -> raise Break
-        | _ -> IntSet.union acc (depend e)
-      in
-      (try es |> List.fold_left f IntSet.empty with Break -> IntSet.empty)
-  | Or es ->
-      let f acc e =
-        match e with
-        | True -> raise Break
-        | _ -> IntSet.union acc (depend e)
-      in
-      (try es |> List.fold_left f IntSet.empty with Break -> IntSet.empty)
+let rec symbols_used_by ast_expr =
+  let fold es =
+    let f (t1, n1) e =
+      let t2, n2 = symbols_used_by e in
+      union t1 t2, union n1 n2
+    in
+    es |> List.fold_left f ([], [])
+  in
+  match ast_expr with
+  | Ast.Terminal s -> [s], []
+  | Ast.Nonterminal s -> [], [s]
+  | Ast.Concat es -> fold es
+  | Ast.Choice es -> fold es
+  | Ast.Repeated e -> symbols_used_by e
 
-let rec eval value_of = function
-  | False -> false
-  | True -> true
-  | Var i -> value_of i
-  | And es ->
-      let f acc e = acc && eval value_of e in
-      es |> List.fold_left f true
-  | Or es ->
-      let f acc e = acc || eval value_of e in
-      es |> List.fold_left f false
+let rec is_well_defined table =
+  let rec f = function
+    | Terminal _ -> true
+    | Nonterminal i -> table.(i)
+    | Concat es -> List.for_all f es
+    | Choice es -> List.exists f es
+    | Repeated _ -> true
+  in
+  f
+
+let rec is_nullable table =
+  let rec f = function
+    | Terminal _ -> false
+    | Nonterminal i -> table.(i)
+    | Concat es -> List.for_all f es
+    | Choice es -> List.exists f es
+    | Repeated _ -> true
+  in
+  f
+
+let rec first_set_of nullable table =
+  let rec f = function
+    | Terminal i -> [i]
+    | Nonterminal i -> table.(i)
+    | Concat es ->
+        let rec g = function
+          | [] -> []
+          | e::es' ->
+              let first_e = f e in
+              if is_nullable nullable e
+              then union first_e (g es')
+              else first_e
+        in
+        g es
+    | Choice es ->
+        es |> List.map f |> union_set
+    | Repeated e -> f e
+  in
+  f
+
+let least_fixpoint grammar f =
+  let n = Array.length grammar in
+  let table = Array.make n false in
+  let changed = ref false in
+  let rec loop () =
+    for i=0 to n-1 do
+      if not table.(i) then begin
+        if f table grammar.(i) then begin
+          table.(i) <- true;
+          changed := true
+        end
+      end
+    done;
+    if !changed then begin
+      changed := false;
+      loop ()
+    end
+  in
+  loop ();
+  table
+
+let least_fixpoint_set grammar f =
+  let n = Array.length grammar in
+  let table = Array.make n [] in
+  let changed = ref false in
+  let rec loop () =
+    for i=0 to n-1 do
+      let old_set = table.(i) in
+      let new_set = f table grammar.(i) in
+      if old_set <> new_set then begin
+        table.(i) <- new_set;
+        changed := true
+      end
+    done;
+    if !changed then begin
+      changed := false;
+      loop ()
+    end
+  in
+  loop ();
+  table
 
 type analyzed_grammar = {
-  grammar : (string * Ast.expr) array;
-  ill_defined_nonterminals : int list;
+  grammar : expr array;
+  terminal_count : int;
+  nonterminal_count : int;
+  terminal_array : string array;
+  nonterminal_array : string array;
+  terminal_dict : (string, int) Hashtbl.t;
+  nonterminal_dict : (string, int) Hashtbl.t;
+  well_defined : bool array;
   nullable : bool array;
+  first_set_array : int list array;
 }
 
 exception Undefined_nonterminals of string list
 
 let analyze ast_grammar =
-  let grammar = Array.of_list ast_grammar in
-  let n = Array.length grammar in
-  (* build name->index table *)
-  let name_to_index = Hashtbl.create n in
-  grammar |>
-  Array.iteri (fun i (nt_name, _) -> Hashtbl.add name_to_index nt_name i);
+  let ast_grammar_array = Array.of_list ast_grammar in
+  let terminals, used_nonterminals =
+    ast_grammar_array |>
+    Array.fold_left (fun (t1, n1) (_, expr) ->
+      let t2, n2 = symbols_used_by expr in
+      union t1 t2, union n1 n2) ([], [])
+  in
+
+  (* build name<->index mapping for terminals *)
+  let terminal_array = Array.of_list terminals in
+  let m = List.length terminals in
+  let terminal_dict = Hashtbl.create m in
+  terminals |> List.iteri (fun i t_name -> Hashtbl.add terminal_dict t_name i);
+
+  (* build name<->index mapping for nonterminals *)
+  let n = Array.length ast_grammar_array in
+  let nonterminal_array = ast_grammar_array |> Array.map fst in
+  let nonterminal_dict = Hashtbl.create n in
+  ast_grammar_array |>
+  Array.iteri (fun i (nt_name, _) -> Hashtbl.add nonterminal_dict nt_name i);
+
   (* look for undefined nonterminals *)
   let undefined_nonterminals =
-    let used_nonterminals =
-      grammar |>
-      Array.fold_left (fun acc (_, expr) ->
-        StringSet.union acc (nonterminals_used_by expr)) StringSet.empty
-    in
     used_nonterminals |>
-    StringSet.filter (fun nt_name -> not (Hashtbl.mem name_to_index nt_name)) |>
-    StringSet.elements
+    List.filter (fun nt_name ->
+      not (Hashtbl.mem nonterminal_dict nt_name))
   in
   if undefined_nonterminals <> [] then
     raise (Undefined_nonterminals undefined_nonterminals);
-  let nullable = Array.make n false in
-  let ill_defined_nonterminals =
-    let resolved = Array.make n false in
-    (* convert to bexp *)
-    let bexp =
-      grammar |>
-      Array.map (fun (_, expr) -> to_bexp (Hashtbl.find name_to_index) expr)
-    in
-    (* dependence graph; edge <a,b> means b depends on a *)
-    let g = Array.make n IntSet.empty in
-    let g' = Array.make n IntSet.empty in
-    let add_edge a b =
-      g.(a) <- IntSet.add b g.(a);
-      g'.(b) <- IntSet.add a g'.(b)
-    in
-    let remove_edge a b =
-      g.(a) <- IntSet.remove b g.(a);
-      g'.(b) <- IntSet.remove a g'.(b)
-    in
-    (* build dependence graph *)
-    for i=0 to n-1 do
-      depend bexp.(i) |> IntSet.iter (fun pred -> add_edge pred i)
-    done;
-    let worklist = Queue.create () in
-    for i=0 to n-1 do
-      if IntSet.is_empty g'.(i) then Queue.push i worklist;
-    done;
-    while not (Queue.is_empty worklist) do
-      let pred = Queue.pop worklist in
-      resolved.(pred) <- true;
-      (* value of variable pred is determined *)
-      nullable.(pred) <- eval (Array.get nullable) bexp.(pred);
-      g.(pred) |>
-      IntSet.iter (fun succ ->
-        remove_edge pred succ;
-        if IntSet.is_empty g'.(succ) then Queue.push succ worklist)
-    done;
-    (* look for ill-defined nonterminals *)
-    let ill = ref [] in
-    for i=n-1 downto 0 do
-      if not resolved.(i) then ill := i :: !ill;
-    done;
-    !ill
+
+  (* convert expressions *)
+  let grammar : expr array =
+    ast_grammar_array |>
+    Array.map (fun (_, ast_expr) ->
+      convert_expr (Hashtbl.find terminal_dict) (Hashtbl.find nonterminal_dict) ast_expr);
   in
-  { grammar; ill_defined_nonterminals; nullable }
+
+  let well_defined = least_fixpoint grammar is_well_defined in
+
+  let nullable = least_fixpoint grammar is_nullable in
+
+  let first_set_array = least_fixpoint_set grammar (first_set_of nullable) in
+
+  {
+    grammar;
+    terminal_count = m;
+    nonterminal_count = n;
+    terminal_array;
+    nonterminal_array;
+    terminal_dict;
+    nonterminal_dict;
+    well_defined;
+    nullable;
+    first_set_array;
+  }
