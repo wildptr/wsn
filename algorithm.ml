@@ -5,10 +5,10 @@ type expr =
   | Choice of expr list
   | Repeated of expr
 
-let rec convert_expr lookup_terminal lookup_nonterminal =
+let rec convert_expr terminal_dict nonterminal_dict =
   let rec f = function
-    | Ast.Terminal s -> Terminal (lookup_terminal s)
-    | Ast.Nonterminal s -> Nonterminal (lookup_nonterminal s)
+    | Ast.Terminal s -> Terminal (Hashtbl.find terminal_dict s)
+    | Ast.Nonterminal s -> Nonterminal (Hashtbl.find nonterminal_dict s)
     | Ast.Concat es -> Concat (List.map f es)
     | Ast.Choice es -> Choice (List.map f es)
     | Ast.Repeated e -> Repeated (f e)
@@ -20,30 +20,26 @@ let rec union l1 l2 =
   | [], _ -> l2
   | _, [] -> l1
   | hd1::tl1, hd2::tl2 ->
-      let hd, tl =
-        if hd1 < hd2 then hd1, union tl1 l2 else hd2, union l1 tl2
-      in
-      match tl with
-      | [] -> [hd]
-      | hd'::tl' -> if hd = hd' then tl else hd::tl
+    let hd, tl =
+      if hd1 < hd2 then hd1, union tl1 l2 else hd2, union l1 tl2
+    in
+    match tl with
+    | [] -> [hd]
+    | hd'::tl' -> if hd = hd' then tl else hd::tl
 
 let union_set = List.fold_left union []
 
 let rec symbols_used_by ast_expr =
   let fold es =
-    let f (t1, n1) e =
-      let t2, n2 = symbols_used_by e in
-      union t1 t2, union n1 n2
-    in
-    es |> List.fold_left f ([], [])
+    es |> List.fold_left (fun acc e -> union acc (symbols_used_by e)) []
   in
   match ast_expr with
-  | Ast.Terminal s -> [s], []
-  | Ast.Nonterminal s -> [], [s]
+  | Ast.Terminal _ | Ast.Nonterminal _ -> [ast_expr]
   | Ast.Concat es -> fold es
   | Ast.Choice es -> fold es
   | Ast.Repeated e -> symbols_used_by e
 
+(* X is well defined iff X can derive a string of terminals *)
 let rec is_well_defined table =
   let rec f = function
     | Terminal _ -> true
@@ -69,17 +65,17 @@ let rec first_set_of nullable table =
     | Terminal i -> [i]
     | Nonterminal i -> table.(i)
     | Concat es ->
-        let rec g = function
-          | [] -> []
-          | e::es' ->
-              let first_e = f e in
-              if is_nullable nullable e
-              then union first_e (g es')
-              else first_e
-        in
-        g es
+      let rec g = function
+        | [] -> []
+        | e::es' ->
+          let first_e = f e in
+          if is_nullable nullable e
+          then union first_e (g es')
+          else first_e
+      in
+      g es
     | Choice es ->
-        es |> List.map f |> union_set
+      es |> List.map f |> union_set
     | Repeated e -> f e
   in
   f
@@ -144,10 +140,14 @@ exception Undefined_nonterminals of string list
 let analyze ast_grammar =
   let ast_grammar_array = Array.of_list ast_grammar in
   let terminals, used_nonterminals =
-    ast_grammar_array |>
-    Array.fold_left (fun (t1, n1) (_, expr) ->
-      let t2, n2 = symbols_used_by expr in
-      union t1 t2, union n1 n2) ([], [])
+    let ast_t, ast_n =
+      ast_grammar_array |>
+      Array.fold_left (fun acc (_, expr) ->
+          union acc (symbols_used_by expr)) [] |>
+      List.partition (function Ast.Terminal _ -> true | _ -> false)
+    in
+    List.map (function Ast.Terminal s -> s | _ -> assert false) ast_t,
+    List.map (function Ast.Nonterminal s -> s | _ -> assert false) ast_n
   in
 
   (* build name<->index mapping for terminals *)
@@ -167,7 +167,7 @@ let analyze ast_grammar =
   let undefined_nonterminals =
     used_nonterminals |>
     List.filter (fun nt_name ->
-      not (Hashtbl.mem nonterminal_dict nt_name))
+        not (Hashtbl.mem nonterminal_dict nt_name))
   in
   if undefined_nonterminals <> [] then
     raise (Undefined_nonterminals undefined_nonterminals);
@@ -176,7 +176,7 @@ let analyze ast_grammar =
   let grammar : expr array =
     ast_grammar_array |>
     Array.map (fun (_, ast_expr) ->
-      convert_expr (Hashtbl.find terminal_dict) (Hashtbl.find nonterminal_dict) ast_expr);
+        convert_expr terminal_dict nonterminal_dict ast_expr);
   in
 
   let well_defined = least_fixpoint grammar is_well_defined in
